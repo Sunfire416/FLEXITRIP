@@ -541,6 +541,13 @@ function PriseEnCharge() {
                     <div style={styles.bagageQr}>
                       QR: {bagage.qrcode_bagage}
                     </div>
+                    {bagage.photo_url ? (
+                      <img
+                        src={bagage.photo_url}
+                        alt="Bagage"
+                        style={{ marginTop: 8, width: 120, height: 120, objectFit: 'cover', borderRadius: 8 }}
+                      />
+                    ) : null}
                   </div>
                 ))}
                 <button onClick={handleScanBagage} style={styles.scanBagageBtn}>

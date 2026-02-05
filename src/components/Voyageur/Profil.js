@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
+import * as api from '../../services/api';
 import { useNavigate } from 'react-router-dom';
+
+const CURRENCY_NAME = 'AccessCoins';
+const CONVERSION_RATE = 10;
+const TOPUP_TIERS = [10, 20, 50, 100, 200];
 
 const CODES_PMR_DISPONIBLES = [
   { code: 'BLND', description: 'Passager malvoyant ou non voyant, avec ou sans chien guide' },
@@ -16,6 +21,8 @@ function Profil() {
   const [profile, setProfile] = useState(null);
   const [codesPmr, setCodesPmr] = useState([]);
   const [selectedCodes, setSelectedCodes] = useState([]);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletLoading, setWalletLoading] = useState(true);
   const [preferences, setPreferences] = useState({
     type_repas: 'standard',
     allergenes: [],
@@ -61,7 +68,64 @@ function Profil() {
     loadProfile();
     loadCodesPmr();
     loadPreferences();
+    loadWallet();
   }, []);
+
+  const getLocalKey = (userId) => `flexitrip_wallet_${userId}`;
+
+  const loadLocalWallet = (userId) => {
+    try {
+      const raw = localStorage.getItem(getLocalKey(userId));
+      if (!raw) return { balance: 0 };
+      const parsed = JSON.parse(raw);
+      return { balance: parsed.balance || 0 };
+    } catch (error) {
+      console.error('Erreur lecture wallet local:', error);
+      return { balance: 0 };
+    }
+  };
+
+  const normalizeBalance = (walletData) => {
+    if (!walletData) return 0;
+    return (
+      walletData.balance ??
+      walletData.solde ??
+      walletData.coins ??
+      walletData.wallet?.balance ??
+      walletData.wallet?.solde ??
+      0
+    );
+  };
+
+  const loadWallet = async () => {
+    setWalletLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setWalletBalance(0);
+        return;
+      }
+
+      let walletData = null;
+      try {
+        walletData = await api.getWallet(user.id);
+      } catch (apiError) {
+        console.warn('Wallet API non disponible, fallback local:', apiError);
+      }
+
+      if (walletData) {
+        setWalletBalance(normalizeBalance(walletData));
+      } else {
+        const local = loadLocalWallet(user.id);
+        setWalletBalance(local.balance);
+      }
+    } catch (error) {
+      console.error('Erreur chargement wallet:', error);
+      setWalletBalance(0);
+    } finally {
+      setWalletLoading(false);
+    }
+  };
 
   const loadProfile = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -305,6 +369,32 @@ function Profil() {
               </div>
             </div>
           )}
+        </div>
+
+        <div style={styles.card}>
+          <h3>🪙 Mon Wallet {CURRENCY_NAME}</h3>
+          <p style={styles.hint}>Recharge rapide et solde disponible</p>
+          <div style={styles.walletRow}>
+            <div>
+              <strong>Solde actuel :</strong>{' '}
+              {walletLoading ? 'Chargement...' : `${walletBalance.toFixed(2)} ${CURRENCY_NAME}`}
+            </div>
+            <div style={styles.walletRate}>1€ = {CONVERSION_RATE} {CURRENCY_NAME}</div>
+          </div>
+          <div style={styles.walletTiers}>
+            {TOPUP_TIERS.map((tier) => (
+              <button
+                key={tier}
+                onClick={() => navigate('/ewallet', { state: { amount: tier } })}
+                style={styles.walletTierBtn}
+              >
+                Ajouter {tier}€
+              </button>
+            ))}
+          </div>
+          <button onClick={() => navigate('/ewallet')} style={styles.walletActionBtn}>
+            Gérer mon wallet
+          </button>
         </div>
 
         <div style={styles.card}>
@@ -667,6 +757,42 @@ const styles = {
     padding: '8px',
     background: '#f8f9fa',
     borderRadius: '6px',
+    cursor: 'pointer',
+  },
+  walletRow: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    marginTop: '10px',
+    fontSize: '14px',
+  },
+  walletRate: {
+    color: '#666',
+    fontSize: '12px',
+  },
+  walletTiers: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '10px',
+    marginTop: '12px',
+  },
+  walletTierBtn: {
+    background: '#e2e8f0',
+    border: 'none',
+    padding: '8px 14px',
+    borderRadius: '999px',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  walletActionBtn: {
+    marginTop: '12px',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: 'none',
+    background: '#2563eb',
+    color: 'white',
+    fontWeight: 'bold',
     cursor: 'pointer',
   },
   loading: {

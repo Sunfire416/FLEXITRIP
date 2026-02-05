@@ -14,6 +14,7 @@ import MesVoyages from './components/Voyageur/MesVoyages';
 import Profil from './components/Voyageur/Profil';
 import GestionVoyageurs from './components/Voyageur/GestionVoyageurs'; // ÉTAPE 8
 import Facturation from './components/Voyageur/Facturation'; // ÉTAPE 9
+import EwalletPage from './pages/EwalletPage';
 
 // Agent
 import DashboardAgent from './components/Agent/DashboardAgent';
@@ -86,6 +87,7 @@ function App() {
             <Route path="/profil" element={<Profil />} />
             <Route path="/voyageurs" element={<GestionVoyageurs />} /> {/* ÉTAPE 8 */}
             <Route path="/factures" element={<Facturation />} /> {/* ÉTAPE 9 */}
+            <Route path="/ewallet" element={<EwalletPage />} />
           </>
         )}
 
