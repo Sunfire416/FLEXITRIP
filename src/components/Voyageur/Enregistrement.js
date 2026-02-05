@@ -366,6 +366,21 @@ function Enregistrement() {
                   <p>Vous serez contacté 30 minutes avant chaque départ.</p>
                 </div>
               )}
+              
+              {/* NOUVEAU : Bouton Gérer mes taxis - APRÈS enregistrement */}
+              {reservation.multimodal && reservation.etapes?.some(e => e.type_transport === 'taxi') && (
+                <div style={styles.taxiSection}>
+                  <button
+                    onClick={() => navigate(`/prise-en-charge-taxi/${reservation.id}`)}
+                    style={styles.taxiBtn}
+                  >
+                    🚕 Gérer mes taxis
+                  </button>
+                  <p style={styles.taxiNote}>
+                    Suivez vos taxis en temps réel avec GPS
+                  </p>
+                </div>
+              )}
             </div>
 
             <div style={styles.bagagesSection}>
@@ -868,6 +883,32 @@ const styles = {
     fontSize: '18px',
     fontWeight: 'bold',
     cursor: 'pointer',
+  },
+  // NOUVEAU : Styles section taxi
+  taxiSection: {
+    marginTop: '20px',
+    padding: '20px',
+    background: '#fff3cd',
+    borderRadius: '8px',
+    textAlign: 'center',
+    borderLeft: '4px solid #ffc107',
+  },
+  taxiBtn: {
+    padding: '12px 30px',
+    background: '#ffc107',
+    color: '#000',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '16px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    boxShadow: '0 4px 8px rgba(255, 193, 7, 0.3)',
+  },
+  taxiNote: {
+    marginTop: '10px',
+    fontSize: '13px',
+    color: '#856404',
+    margin: '10px 0 0 0',
   },
   loading: {
     display: 'flex',

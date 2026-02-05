@@ -15,6 +15,13 @@ function Reservation() {
     voyageur_associe_id: null,
   });
   const [loading, setLoading] = useState(false);
+  
+  // NOUVEAUX ÉTATS POUR TEMPLATES
+  const [templateDetecte, setTemplateDetecte] = useState(null);
+  const [etapesTemplate, setEtapesTemplate] = useState([]);
+  const [modeTemplate, setModeTemplate] = useState(false);
+  const [rechercheTemplateEnCours, setRechercheTemplateEnCours] = useState(false);
+  
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -30,7 +37,6 @@ function Reservation() {
       .single();
     setProfile(data);
     
-    // ÉTAPE 8 : Charger les voyageurs associés
     if (user) {
       const { data: voyageursData } = await supabase
         .from('voyageurs_associes')
@@ -40,6 +46,73 @@ function Reservation() {
       setVoyageurs(voyageursData || []);
     }
   };
+
+  // FONCTION DE RECHERCHE DE TEMPLATE
+  const rechercherTemplate = async (depart, arrivee) => {
+    if (!depart || !arrivee || depart.length < 3 || arrivee.length < 3) {
+      setTemplateDetecte(null);
+      setEtapesTemplate([]);
+      setModeTemplate(false);
+      return;
+    }
+
+    try {
+      setRechercheTemplateEnCours(true);
+      console.log('🔍 Recherche template:', { depart, arrivee });
+
+      // Rechercher un template correspondant
+      const { data: templates, error: templateError } = await supabase
+        .from('itineraires_templates')
+        .select('*')
+        .ilike('depart_lieu', `%${depart}%`)
+        .ilike('arrivee_lieu', `%${arrivee}%`)
+        .eq('actif', true)
+        .limit(1);
+
+      if (templateError) throw templateError;
+
+      if (templates && templates.length > 0) {
+        const template = templates[0];
+        console.log('✅ Template trouvé:', template);
+
+        // Charger les étapes du template
+        const { data: etapes, error: etapesError } = await supabase
+          .from('itineraires_templates_etapes')
+          .select('*')
+          .eq('template_id', template.id)
+          .order('ordre');
+
+        if (etapesError) throw etapesError;
+
+        console.log('📋 Étapes chargées:', etapes);
+
+        setTemplateDetecte(template);
+        setEtapesTemplate(etapes || []);
+        setModeTemplate(true);
+        setFormData(prev => ({ ...prev, multimodal: true }));
+      } else {
+        console.log('ℹ️ Aucun template trouvé');
+        setTemplateDetecte(null);
+        setEtapesTemplate([]);
+        setModeTemplate(false);
+      }
+    } catch (error) {
+      console.error('❌ Erreur recherche template:', error);
+    } finally {
+      setRechercheTemplateEnCours(false);
+    }
+  };
+
+  // DEBOUNCE : Rechercher template automatiquement après 800ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (formData.depart_lieu && formData.arrivee_lieu) {
+        rechercherTemplate(formData.depart_lieu, formData.arrivee_lieu);
+      }
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [formData.depart_lieu, formData.arrivee_lieu]);
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -67,22 +140,18 @@ function Reservation() {
     setFormData({ ...formData, transports: newTransports });
   };
 
-  // ÉTAPE 9 : Fonction de génération de facture
   const genererFacture = async (reservationId, profileId, reservationData) => {
     try {
       console.log('🚀 Début génération facture');
-      console.log('📋 Params:', { reservationId, profileId, assistance_pmr: reservationData.assistance_pmr });
       
       let montant_ht = 0;
       const details = {};
 
-      // Tarif de base assistance PMR
       if (reservationData.assistance_pmr) {
         details.tarif_base = 25;
         montant_ht += 25;
       }
 
-      // Tarif multimodal (par étape supplémentaire)
       if (reservationData.multimodal && reservationData.transports.length > 1) {
         const nb_etapes = reservationData.transports.length;
         details.nb_etapes = nb_etapes;
@@ -90,22 +159,15 @@ function Reservation() {
         montant_ht += details.tarif_multimodal;
       }
 
-      // Assistance spéciale
       if (reservationData.assistance_pmr) {
         details.tarif_assistance_speciale = 10;
         montant_ht += 10;
       }
 
-      // TVA 20%
       const montant_tva = montant_ht * 0.20;
       const montant_ttc = montant_ht + montant_tva;
 
-      console.log('💰 Montants calculés:', { montant_ht, montant_tva, montant_ttc, details });
-
-      // Générer numéro de facture (fallback sans RPC pour debug)
       const num_facture = `FACT-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-      
-      console.log('🔢 Numéro facture:', num_facture);
 
       const factureData = {
         reservation_id: reservationId,
@@ -120,9 +182,6 @@ function Reservation() {
         details: details,
       };
 
-      console.log('📝 Données facture à insérer:', factureData);
-
-      // Créer la facture
       const { data: facture, error } = await supabase
         .from('factures')
         .insert(factureData)
@@ -134,11 +193,10 @@ function Reservation() {
         throw error;
       }
 
-      console.log('✅ Facture créée avec succès:', facture);
+      console.log('✅ Facture créée:', facture);
       return facture;
     } catch (error) {
       console.error('❌ Erreur génération facture:', error);
-      alert('⚠️ Erreur lors de la génération de la facture: ' + error.message);
       return null;
     }
   };
@@ -149,8 +207,9 @@ function Reservation() {
 
     try {
       console.log('📝 Début création réservation');
-      
-      // Générer numéro de réservation MMT
+      console.log('🎯 Mode template:', modeTemplate);
+
+      const { data: { user } } = await supabase.auth.getUser();
       const num_reza_mmt = `MMT-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
 
       // Créer la réservation
@@ -158,6 +217,7 @@ function Reservation() {
         .from('reservations')
         .insert({
           profile_id: profile.id,
+          user_id: user.id,
           voyageur_associe_id: formData.voyageur_associe_id,
           num_reza_mmt,
           depart_lieu: formData.depart_lieu,
@@ -166,54 +226,86 @@ function Reservation() {
           multimodal: formData.multimodal,
           assistance_pmr: formData.assistance_pmr,
           statut: 'confirmee',
-          prix_total: (Math.random() * 200 + 50).toFixed(2),
+          prix_total: modeTemplate ? templateDetecte.prix_estime : (Math.random() * 200 + 50).toFixed(2),
         })
         .select()
         .single();
 
       if (resaError) throw resaError;
-
       console.log('✅ Réservation créée:', reservation);
 
-      // Créer les étapes
-      const etapesData = formData.transports.map((transport, index) => ({
-        reservation_id: reservation.id,
-        ordre: index + 1,
-        type_transport: transport,
-        operateur: getOperateur(transport),
-        num_reza_operateur: `${getOperateur(transport).toUpperCase()}-${Date.now()}-${index}`,
-        depart_lieu: index === 0 ? formData.depart_lieu : `Gare Intermédiaire ${index}`,
-        arrivee_lieu: index === formData.transports.length - 1 ? formData.arrivee_lieu : `Gare Intermédiaire ${index + 1}`,
-        depart_heure: new Date(new Date(formData.date_depart).getTime() + index * 2 * 60 * 60 * 1000).toISOString(),
-        statut: 'reservee',
-      }));
+      // MODE TEMPLATE : Créer les étapes enrichies
+      if (modeTemplate && etapesTemplate.length > 0) {
+        console.log('🎨 Création étapes depuis template');
 
-      const { error: etapesError } = await supabase
-        .from('etapes')
-        .insert(etapesData);
+        const dateDepart = new Date(formData.date_depart);
+        
+        const etapesData = etapesTemplate.map((etape) => {
+          // Calculer horaires
+          const depart_heure = new Date(dateDepart.getTime() + etape.delai_depuis_debut_minutes * 60000);
+          const arrivee_heure = new Date(depart_heure.getTime() + etape.duree_minutes * 60000);
 
-      if (etapesError) throw etapesError;
+          return {
+            reservation_id: reservation.id,
+            ordre: etape.ordre,
+            type_transport: etape.type_transport,
+            operateur: etape.operateur,
+            num_reza_operateur: `${etape.operateur?.toUpperCase() || 'MMT'}-${Date.now()}-${etape.ordre}`,
+            depart_lieu: etape.depart_lieu,
+            arrivee_lieu: etape.arrivee_lieu,
+            depart_heure: depart_heure.toISOString(),
+            arrivee_heure_prevue: arrivee_heure.toISOString(),
+            duree_minutes: etape.duree_minutes,
+            distance_km: etape.distance_km,
+            ligne_transport: etape.ligne_transport,
+            numero_transport: etape.numero_transport,
+            prix_segment: etape.prix_segment,
+            metadata_json: etape.metadata_json,
+            statut: 'reservee',
+          };
+        });
 
-      console.log('✅ Étapes créées');
+        const { error: etapesError } = await supabase
+          .from('etapes')
+          .insert(etapesData);
 
-      // ÉTAPE 9 : Générer la facture si assistance PMR
-      if (formData.assistance_pmr) {
-        console.log('💳 Génération facture car assistance_pmr = true');
-        const facture = await genererFacture(reservation.id, profile.id, formData);
-        if (facture) {
-          console.log('✅ Facture générée:', facture.num_facture);
-        } else {
-          console.warn('⚠️ Facture non générée (erreur)');
-        }
+        if (etapesError) throw etapesError;
+        console.log('✅ Étapes template créées:', etapesData.length);
+
       } else {
-        console.log('ℹ️ Pas de facture (assistance_pmr = false)');
+        // MODE MANUEL : Création classique
+        console.log('🔧 Création étapes mode manuel');
+
+        const etapesData = formData.transports.map((transport, index) => ({
+          reservation_id: reservation.id,
+          ordre: index + 1,
+          type_transport: transport,
+          operateur: getOperateur(transport),
+          num_reza_operateur: `${getOperateur(transport).toUpperCase()}-${Date.now()}-${index}`,
+          depart_lieu: index === 0 ? formData.depart_lieu : `Gare Intermédiaire ${index}`,
+          arrivee_lieu: index === formData.transports.length - 1 ? formData.arrivee_lieu : `Gare Intermédiaire ${index + 1}`,
+          depart_heure: new Date(new Date(formData.date_depart).getTime() + index * 2 * 60 * 60 * 1000).toISOString(),
+          statut: 'reservee',
+        }));
+
+        const { error: etapesError } = await supabase
+          .from('etapes')
+          .insert(etapesData);
+
+        if (etapesError) throw etapesError;
+        console.log('✅ Étapes manuelles créées');
+      }
+
+      // Générer facture si assistance PMR
+      if (formData.assistance_pmr) {
+        await genererFacture(reservation.id, profile.id, formData);
       }
 
       alert(`✅ Réservation confirmée !\n\nNuméro: ${num_reza_mmt}`);
       navigate('/mes-voyages');
     } catch (error) {
-      console.error('❌ Erreur lors de la réservation:', error);
-      alert('❌ Erreur lors de la réservation: ' + error.message);
+      console.error('❌ Erreur réservation:', error);
+      alert('❌ Erreur: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -229,6 +321,25 @@ function Reservation() {
       taxi: 'G7',
     };
     return operateurs[transport] || 'MMT';
+  };
+
+  const getTransportIcon = (type) => {
+    const icons = {
+      taxi: '🚕',
+      train: '🚄',
+      bus: '🚌',
+      avion: '✈️',
+      metro: '🚇',
+      vtc: '🚗',
+    };
+    return icons[type] || '🚆';
+  };
+
+  const formatDuree = (minutes) => {
+    if (minutes < 60) return `${minutes} min`;
+    const heures = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return mins > 0 ? `${heures}h${mins.toString().padStart(2, '0')}` : `${heures}h`;
   };
 
   return (
@@ -250,7 +361,7 @@ function Reservation() {
               name="depart_lieu"
               value={formData.depart_lieu}
               onChange={handleChange}
-              placeholder="Ex: Paris Gare de Lyon"
+              placeholder="Ex: Paris, Champs-Élysées"
               style={styles.input}
               required
             />
@@ -263,11 +374,75 @@ function Reservation() {
               name="arrivee_lieu"
               value={formData.arrivee_lieu}
               onChange={handleChange}
-              placeholder="Ex: Marseille Saint-Charles"
+              placeholder="Ex: Marseille, Stade Vélodrome"
               style={styles.input}
               required
             />
           </div>
+
+          {/* AFFICHAGE RECHERCHE EN COURS */}
+          {rechercheTemplateEnCours && (
+            <div style={styles.rechercheEnCours}>
+              🔍 Recherche d'itinéraires optimisés...
+            </div>
+          )}
+
+          {/* CARTE VIOLETTE - TEMPLATE DÉTECTÉ */}
+          {modeTemplate && templateDetecte && etapesTemplate.length > 0 && (
+            <div style={styles.templateCard}>
+              <div style={styles.templateHeader}>
+                <h3 style={styles.templateTitle}>✨ Itinéraire optimisé détecté</h3>
+                <span style={styles.templateBadge}>Recommandé</span>
+              </div>
+
+              <div style={styles.templateInfo}>
+                <div style={styles.templateInfoRow}>
+                  <span>📍 {templateDetecte.nom}</span>
+                </div>
+                <div style={styles.templateInfoRow}>
+                  <span>⏱️ Durée totale : {formatDuree(templateDetecte.duree_totale_minutes)}</span>
+                  <span>💰 Prix estimé : {templateDetecte.prix_estime?.toFixed(2)} €</span>
+                </div>
+              </div>
+
+              <div style={styles.etapesList}>
+                {etapesTemplate.map((etape, index) => (
+                  <div key={etape.id} style={styles.etapeItem}>
+                    <div style={styles.etapeIcone}>
+                      {getTransportIcon(etape.type_transport)}
+                    </div>
+                    <div style={styles.etapeContent}>
+                      <div style={styles.etapeHeader}>
+                        <strong>Étape {index + 1} : {etape.type_transport.toUpperCase()}</strong>
+                        {etape.numero_transport && (
+                          <span style={styles.etapeNumero}>{etape.numero_transport}</span>
+                        )}
+                      </div>
+                      <div style={styles.etapeTrajet}>
+                        {etape.depart_lieu} → {etape.arrivee_lieu}
+                      </div>
+                      <div style={styles.etapeDetails}>
+                        <span>⏱️ {formatDuree(etape.duree_minutes)}</span>
+                        <span>📏 {etape.distance_km} km</span>
+                        <span>💰 {etape.prix_segment?.toFixed(2)} €</span>
+                      </div>
+                      {etape.operateur && (
+                        <div style={styles.etapeOperateur}>
+                          Opérateur : {etape.operateur}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={styles.templateFooter}>
+                <p style={styles.templateNote}>
+                  ℹ️ Cet itinéraire a été optimisé pour les PMR avec des correspondances facilitées
+                </p>
+              </div>
+            </div>
+          )}
 
           <div style={styles.formGroup}>
             <label>📅 Date de départ</label>
@@ -288,6 +463,7 @@ function Reservation() {
                 name="multimodal"
                 checked={formData.multimodal}
                 onChange={handleChange}
+                disabled={modeTemplate}
               />
               <span>🔄 Voyage multimodal (plusieurs transports)</span>
             </label>
@@ -303,7 +479,6 @@ function Reservation() {
             </label>
           </div>
 
-          {/* ÉTAPE 8 : Sélecteur de voyageur */}
           {voyageurs.length > 0 && (
             <div style={styles.formGroup}>
               <label>👥 Réserver pour :</label>
@@ -322,50 +497,50 @@ function Reservation() {
                   </option>
                 ))}
               </select>
-              <p style={styles.hint}>
-                Sélectionnez la personne pour qui vous réservez ce voyage
-              </p>
             </div>
           )}
 
-          <div style={styles.section}>
-            <h3>🚄 Moyens de transport</h3>
-            {formData.transports.map((transport, index) => (
-              <div key={index} style={styles.transportRow}>
-                <span style={styles.stepNumber}>Étape {index + 1}</span>
-                <select
-                  value={transport}
-                  onChange={(e) => handleTransportChange(index, e.target.value)}
-                  style={styles.select}
-                >
-                  <option value="train">🚄 Train</option>
-                  <option value="bus">🚌 Bus</option>
-                  <option value="avion">✈️ Avion</option>
-                  <option value="metro">🚇 Métro</option>
-                  <option value="vtc">🚗 VTC</option>
-                  <option value="taxi">🚕 Taxi</option>
-                </select>
-                {formData.transports.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeTransport(index)}
-                    style={styles.removeBtn}
+          {/* MODE MANUEL - Sélection transports */}
+          {!modeTemplate && (
+            <div style={styles.section}>
+              <h3>🚄 Moyens de transport</h3>
+              {formData.transports.map((transport, index) => (
+                <div key={index} style={styles.transportRow}>
+                  <span style={styles.stepNumber}>Étape {index + 1}</span>
+                  <select
+                    value={transport}
+                    onChange={(e) => handleTransportChange(index, e.target.value)}
+                    style={styles.select}
                   >
-                    ❌
-                  </button>
-                )}
-              </div>
-            ))}
-            {formData.multimodal && (
-              <button
-                type="button"
-                onClick={addTransport}
-                style={styles.addBtn}
-              >
-                ➕ Ajouter une étape
-              </button>
-            )}
-          </div>
+                    <option value="train">🚄 Train</option>
+                    <option value="bus">🚌 Bus</option>
+                    <option value="avion">✈️ Avion</option>
+                    <option value="metro">🚇 Métro</option>
+                    <option value="vtc">🚗 VTC</option>
+                    <option value="taxi">🚕 Taxi</option>
+                  </select>
+                  {formData.transports.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeTransport(index)}
+                      style={styles.removeBtn}
+                    >
+                      ❌
+                    </button>
+                  )}
+                </div>
+              ))}
+              {formData.multimodal && (
+                <button
+                  type="button"
+                  onClick={addTransport}
+                  style={styles.addBtn}
+                >
+                  ➕ Ajouter une étape
+                </button>
+              )}
+            </div>
+          )}
 
           <button type="submit" disabled={loading} style={styles.submitBtn}>
             {loading ? 'Réservation en cours...' : '🎫 Confirmer la réservation'}
@@ -402,7 +577,7 @@ const styles = {
     cursor: 'pointer',
   },
   content: {
-    maxWidth: '800px',
+    maxWidth: '900px',
     margin: '0 auto',
     padding: '40px 20px',
   },
@@ -427,10 +602,114 @@ const styles = {
     fontSize: '14px',
     marginTop: '5px',
   },
-  hint: {
+  rechercheEnCours: {
+    padding: '15px',
+    background: '#e3f2fd',
+    borderRadius: '8px',
+    textAlign: 'center',
+    color: '#1976d2',
+    fontWeight: 'bold',
+    marginBottom: '20px',
+  },
+  // STYLES CARTE TEMPLATE
+  templateCard: {
+    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    borderRadius: '12px',
+    padding: '25px',
+    marginBottom: '25px',
+    color: 'white',
+    boxShadow: '0 8px 16px rgba(102, 126, 234, 0.3)',
+  },
+  templateHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '20px',
+  },
+  templateTitle: {
+    margin: 0,
+    fontSize: '20px',
+    fontWeight: 'bold',
+  },
+  templateBadge: {
+    background: 'rgba(255,255,255,0.3)',
+    padding: '6px 12px',
+    borderRadius: '20px',
     fontSize: '12px',
+    fontWeight: 'bold',
+  },
+  templateInfo: {
+    background: 'rgba(255,255,255,0.2)',
+    borderRadius: '8px',
+    padding: '15px',
+    marginBottom: '20px',
+  },
+  templateInfoRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    marginBottom: '8px',
+    fontSize: '14px',
+  },
+  etapesList: {
+    background: 'white',
+    borderRadius: '8px',
+    padding: '15px',
+  },
+  etapeItem: {
+    display: 'flex',
+    gap: '15px',
+    padding: '15px',
+    background: '#f8f9fa',
+    borderRadius: '8px',
+    marginBottom: '10px',
+    color: '#333',
+  },
+  etapeIcone: {
+    fontSize: '32px',
+    flexShrink: 0,
+  },
+  etapeContent: {
+    flex: 1,
+  },
+  etapeHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '8px',
+  },
+  etapeNumero: {
+    background: '#667eea',
+    color: 'white',
+    padding: '4px 10px',
+    borderRadius: '12px',
+    fontSize: '12px',
+    fontWeight: 'bold',
+  },
+  etapeTrajet: {
+    fontSize: '14px',
     color: '#666',
+    marginBottom: '8px',
+  },
+  etapeDetails: {
+    display: 'flex',
+    gap: '15px',
+    fontSize: '13px',
+    color: '#999',
+  },
+  etapeOperateur: {
+    fontSize: '12px',
+    color: '#999',
     marginTop: '5px',
+  },
+  templateFooter: {
+    marginTop: '15px',
+    paddingTop: '15px',
+    borderTop: '1px solid rgba(255,255,255,0.3)',
+  },
+  templateNote: {
+    margin: 0,
+    fontSize: '13px',
+    opacity: 0.9,
   },
   checkboxGroup: {
     marginBottom: '20px',
