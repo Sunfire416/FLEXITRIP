@@ -1,13 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
+import * as api from '../../services/api';
+import { useNavigate } from 'react-router-dom';
+
+const CURRENCY_NAME = 'AccessCoins';
+const CONVERSION_RATE = 10;
 
 function Facturation() {
   const [profile, setProfile] = useState(null);
   const [factures, setFactures] = useState([]);
   const [selectedFacture, setSelectedFacture] = useState(null);
   const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletLoading, setWalletLoading] = useState(true);
   const [paymentData, setPaymentData] = useState({
-    moyen_paiement: 'carte_bancaire',
+    moyen_paiement: 'accesscoins',
     numero_carte: '',
     nom_carte: '',
     expiration: '',
@@ -15,11 +22,80 @@ function Facturation() {
   });
   const [processing, setProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
     loadProfile();
     loadFactures();
+    loadWallet();
   }, []);
+
+  const getLocalKey = (userId) => `flexitrip_wallet_${userId}`;
+
+  const loadLocalWallet = (userId) => {
+    try {
+      const raw = localStorage.getItem(getLocalKey(userId));
+      if (!raw) return { balance: 0, transactions: [] };
+      const parsed = JSON.parse(raw);
+      return {
+        balance: parsed.balance || 0,
+        transactions: parsed.transactions || [],
+      };
+    } catch (error) {
+      console.error('Erreur lecture wallet local:', error);
+      return { balance: 0, transactions: [] };
+    }
+  };
+
+  const saveLocalWallet = (userId, wallet) => {
+    try {
+      localStorage.setItem(getLocalKey(userId), JSON.stringify(wallet));
+    } catch (error) {
+      console.error('Erreur sauvegarde wallet local:', error);
+    }
+  };
+
+  const normalizeBalance = (walletData) => {
+    if (!walletData) return 0;
+    return (
+      walletData.balance ??
+      walletData.solde ??
+      walletData.coins ??
+      walletData.wallet?.balance ??
+      walletData.wallet?.solde ??
+      0
+    );
+  };
+
+  const loadWallet = async () => {
+    setWalletLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setWalletBalance(0);
+        return;
+      }
+
+      let walletData = null;
+      try {
+        walletData = await api.getWallet(user.id);
+      } catch (apiError) {
+        console.warn('Wallet API non disponible, fallback local:', apiError);
+      }
+
+      if (walletData) {
+        setWalletBalance(normalizeBalance(walletData));
+      } else {
+        const local = loadLocalWallet(user.id);
+        setWalletBalance(local.balance);
+      }
+    } catch (error) {
+      console.error('Erreur chargement wallet:', error);
+      setWalletBalance(0);
+    } finally {
+      setWalletLoading(false);
+    }
+  };
 
   const loadProfile = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -75,6 +151,50 @@ function Facturation() {
     setProcessing(true);
 
     try {
+      const amountEur = selectedFacture.montant_ttc;
+      const requiredCoins = amountEur * CONVERSION_RATE;
+
+      if (paymentData.moyen_paiement !== 'accesscoins') {
+        alert('❌ Le paiement des voyages est disponible uniquement via AccessCoins.');
+        setProcessing(false);
+        return;
+      }
+
+      if (walletBalance < requiredCoins) {
+        alert(`❌ Solde insuffisant. Il faut ${requiredCoins.toFixed(2)} ${CURRENCY_NAME}.`);
+        setProcessing(false);
+        navigate('/ewallet');
+        return;
+      }
+
+      try {
+        await api.debitWallet({
+          user_id: profile?.user_id,
+          amount_coins: requiredCoins,
+          description: `Paiement facture ${selectedFacture.num_facture}`,
+          mode: 'simulation',
+        });
+        const refreshed = await api.getWallet(profile?.user_id);
+        setWalletBalance(normalizeBalance(refreshed));
+      } catch (apiError) {
+        console.warn('Débit wallet API échoué, simulation locale:', apiError);
+        const local = loadLocalWallet(profile?.user_id);
+        const nextBalance = local.balance - requiredCoins;
+        const tx = {
+          id: `local-${Date.now()}`,
+          type: 'debit',
+          amount_coins: requiredCoins,
+          description: `Paiement facture ${selectedFacture.num_facture}`,
+          status: 'success',
+          created_at: new Date().toISOString(),
+        };
+        saveLocalWallet(profile?.user_id, {
+          balance: nextBalance,
+          transactions: [tx, ...local.transactions],
+        });
+        setWalletBalance(nextBalance);
+      }
+
       // SIMULATION de paiement (2 secondes)
       await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -94,6 +214,8 @@ function Facturation() {
           metadata: {
             numero_carte_masque: paymentData.numero_carte ? `****${paymentData.numero_carte.slice(-4)}` : null,
             nom_carte: paymentData.nom_carte,
+            amount_coins: paymentData.moyen_paiement === 'accesscoins' ? requiredCoins : null,
+            conversion_rate: paymentData.moyen_paiement === 'accesscoins' ? CONVERSION_RATE : null,
           },
         });
 
@@ -159,6 +281,7 @@ function Facturation() {
       virement: '🏦',
       especes: '💵',
       cheque: '📝',
+      accesscoins: '🪙',
     };
     return icons[moyen] || '💰';
   };
@@ -170,6 +293,9 @@ function Facturation() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
+        <button type="button" onClick={() => navigate(-1)} style={styles.backBtn}>
+          ← Retour
+        </button>
         <h2>💰 Mes factures et paiements</h2>
         <p style={styles.subtitle}>Gérez vos factures d'assistance PMR</p>
       </div>
@@ -290,11 +416,30 @@ function Facturation() {
                 onChange={handlePaymentChange}
                 style={styles.input}
               >
-                <option value="carte_bancaire">💳 Carte bancaire</option>
-                <option value="virement">🏦 Virement bancaire</option>
-                <option value="especes">💵 Espèces</option>
-                <option value="cheque">📝 Chèque</option>
+                <option value="accesscoins">🪙 {CURRENCY_NAME}</option>
               </select>
+
+              {paymentData.moyen_paiement === 'accesscoins' && (
+                <div style={styles.walletInfo}>
+                  <p>
+                    Solde wallet :{' '}
+                    <strong>
+                      {walletLoading ? 'Chargement...' : `${walletBalance.toFixed(2)} ${CURRENCY_NAME}`}
+                    </strong>
+                  </p>
+                  <p>
+                    À payer :{' '}
+                    <strong>
+                      {(selectedFacture.montant_ttc * CONVERSION_RATE).toFixed(2)} {CURRENCY_NAME}
+                    </strong>
+                  </p>
+                  {walletBalance < selectedFacture.montant_ttc * CONVERSION_RATE && (
+                    <p style={styles.walletWarning}>
+                      Solde insuffisant. Rechargez votre wallet.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {paymentData.moyen_paiement === 'carte_bancaire' && (
                 <>
@@ -352,14 +497,9 @@ function Facturation() {
                 </>
               )}
 
-              {paymentData.moyen_paiement === 'virement' && (
-                <div style={styles.virementInfo}>
-                  <p><strong>Coordonnées bancaires :</strong></p>
-                  <p>IBAN : FR76 1234 5678 9012 3456 7890 123</p>
-                  <p>BIC : BNPAFRPPXXX</p>
-                  <p>Référence : {selectedFacture.num_facture}</p>
-                </div>
-              )}
+              <div style={styles.virementInfo}>
+                <p><strong>Recharge wallet :</strong> utilisez les moyens classiques sur la page AccessCoins.</p>
+              </div>
 
               <div style={styles.modalActions}>
                 <button
@@ -397,6 +537,15 @@ const styles = {
   header: {
     maxWidth: '1200px',
     margin: '0 auto 40px',
+  },
+  backBtn: {
+    padding: '8px 16px',
+    background: '#667eea',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    marginBottom: '12px',
   },
   subtitle: {
     fontSize: '14px',
@@ -587,6 +736,19 @@ const styles = {
     borderRadius: '8px',
     fontSize: '14px',
     marginTop: '15px',
+  },
+  walletInfo: {
+    background: '#eff6ff',
+    padding: '15px',
+    borderRadius: '8px',
+    fontSize: '14px',
+    marginTop: '15px',
+    color: '#1e3a8a',
+  },
+  walletWarning: {
+    marginTop: '8px',
+    color: '#b91c1c',
+    fontWeight: 'bold',
   },
   modalActions: {
     marginTop: '25px',

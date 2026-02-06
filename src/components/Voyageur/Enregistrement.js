@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import '@tensorflow/tfjs';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import { supabase } from '../../supabaseClient';
 import { useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
@@ -11,7 +13,17 @@ function Enregistrement() {
   const [newBagage, setNewBagage] = useState({
     type: 'soute',
     poids: '',
+    couleur: '',
+    description: '',
+    photoFile: null,
   });
+  const [photoPreview, setPhotoPreview] = useState('');
+  const [detector, setDetector] = useState(null);
+  const [modelLoading, setModelLoading] = useState(true);
+  const [modelError, setModelError] = useState('');
+  const [detectStatus, setDetectStatus] = useState('idle');
+  const [isBagage, setIsBagage] = useState(null);
+  const [bagageError, setBagageError] = useState('');
   const [modeOffline, setModeOffline] = useState(false);
   const [enregistrementOffline, setEnregistrementOffline] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -22,6 +34,78 @@ function Enregistrement() {
     loadReservation();
     checkOfflineEnregistrement();
   }, [reservationId]);
+
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+    };
+  }, [photoPreview]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadModel = async () => {
+      try {
+        setModelLoading(true);
+        setModelError('');
+        const model = await cocoSsd.load();
+        if (!active) return;
+        setDetector(model);
+      } catch (error) {
+        if (!active) return;
+        console.error('Erreur chargement modèle IA:', error);
+        setModelError('Impossible de charger le détecteur de bagage.');
+      } finally {
+        if (active) setModelLoading(false);
+      }
+    };
+
+    loadModel();
+    return () => { active = false; };
+  }, []);
+
+  const detectBagage = async (file) => {
+    if (!file) {
+      setDetectStatus('idle');
+      setIsBagage(null);
+      return;
+    }
+    if (!detector) {
+      setDetectStatus('loading');
+      setIsBagage(null);
+      return;
+    }
+
+    try {
+      setDetectStatus('checking');
+
+      const objectUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = objectUrl;
+      await new Promise((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Image invalide'));
+      });
+
+      const predictions = await detector.detect(img);
+      URL.revokeObjectURL(objectUrl);
+
+      const allowedClasses = ['suitcase', 'backpack', 'handbag'];
+      const match = predictions.find((p) => allowedClasses.includes(p.class) && p.score >= 0.35);
+
+      if (match) {
+        setIsBagage(true);
+        setDetectStatus('ok');
+      } else {
+        setIsBagage(false);
+        setDetectStatus('not_bagage');
+      }
+    } catch (error) {
+      console.error('Erreur détection bagage:', error);
+      setDetectStatus('error');
+      setIsBagage(null);
+    }
+  };
 
   const checkOfflineEnregistrement = () => {
     const offlineKey = `offline_enreg_${reservationId}`;
@@ -63,7 +147,66 @@ function Enregistrement() {
     setBagages(data || []);
   };
 
+  const uploadBagagePhoto = async (file) => {
+    if (!file) throw new Error('Aucun fichier sélectionné');
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      throw new Error('Format image non supporté. Utilise JPG, PNG ou WEBP.');
+    }
+
+    const fileExt = file.name.split('.').pop();
+    const filePath = `bagages/${reservationId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+
+    const primaryBucket = process.env.REACT_APP_BAGAGE_BUCKET || 'bagages';
+    const fallbackBucket = process.env.REACT_APP_BAGAGE_BUCKET_FALLBACK || 'avatars';
+
+    const uploadToBucket = async (bucket) => {
+      const { error: uploadError } = await supabase
+        .storage
+        .from(bucket)
+        .upload(filePath, file, { upsert: true, contentType: file.type, cacheControl: '3600' });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase
+        .storage
+        .from(bucket)
+        .getPublicUrl(filePath);
+
+      return data?.publicUrl || '';
+    };
+
+    const toDataUrl = async () => {
+      if (file.size > 2 * 1024 * 1024) {
+        throw new Error('Aucun bucket disponible. Image trop volumineuse pour un enregistrement direct.');
+      }
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Erreur lecture image'));
+        reader.readAsDataURL(file);
+      });
+    };
+
+    try {
+      return await uploadToBucket(primaryBucket);
+    } catch (error) {
+      if (String(error?.message || '').toLowerCase().includes('bucket not found')) {
+        try {
+          return await uploadToBucket(fallbackBucket);
+        } catch (fallbackError) {
+          if (String(fallbackError?.message || '').toLowerCase().includes('bucket not found')) {
+            return await toDataUrl();
+          }
+          throw fallbackError;
+        }
+      }
+      throw error;
+    }
+  };
+
   const handleAddBagage = async () => {
+    setBagageError('');
     if (!enregistrement) {
       alert('❌ Veuillez d\'abord effectuer l\'enregistrement');
       return;
@@ -74,25 +217,91 @@ function Enregistrement() {
       return;
     }
 
+    if (!newBagage.photoFile) {
+      alert('❌ Merci d\'ajouter une photo du bagage');
+      return;
+    }
+
+    if (modelLoading) {
+      alert('⏳ Détecteur de bagage en cours de chargement. Réessaie dans un instant.');
+      return;
+    }
+
+    if (modelError) {
+      alert(`❌ ${modelError} Réessaie après rechargement de la page.`);
+      return;
+    }
+
+    if (detectStatus === 'checking') {
+      alert('⏳ Analyse de la photo en cours. Merci de patienter.');
+      return;
+    }
+
+    if (isBagage === false) {
+      alert('❌ Ce n\'est pas un bagage. Veuillez recommencer avec une photo de bagage.');
+      return;
+    }
+
+    if (isBagage === null) {
+      alert('❌ Analyse du bagage non terminée. Merci de réessayer.');
+      return;
+    }
+
     try {
       // Générer QR code unique pour le bagage
       const qrcode_bagage = `BAG-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
-      
-      // Simuler une photo de bagage (URL fictive)
-      const photo_url = `https://images.unsplash.com/photo-1565026057447-bc90a3dceb87?w=400`;
 
-      const { data, error } = await supabase
+      const photo_url = await uploadBagagePhoto(newBagage.photoFile);
+
+      const basePayload = {
+        enregistrement_id: enregistrement.id,
+        reservation_id: reservationId,
+        type: newBagage.type,
+        poids: parseFloat(newBagage.poids),
+        qrcode_bagage,
+        photo_url,
+        statut: 'enregistre',
+      };
+
+      const basePayloadNoReservation = {
+        enregistrement_id: enregistrement.id,
+        type: newBagage.type,
+        poids: parseFloat(newBagage.poids),
+        qrcode_bagage,
+        photo_url,
+        statut: 'enregistre',
+      };
+
+      const payloadWithOptional = {
+        ...basePayload,
+        couleur: newBagage.couleur || null,
+        description: newBagage.description || null,
+      };
+
+      let data;
+      let error;
+
+      ({ data, error } = await supabase
         .from('bagages')
-        .insert({
-          enregistrement_id: enregistrement.id,
-          type: newBagage.type,
-          poids: parseFloat(newBagage.poids),
-          qrcode_bagage,
-          photo_url,
-          statut: 'enregistre',
-        })
+        .insert(payloadWithOptional)
         .select()
-        .single();
+        .single());
+
+      if (error && String(error.message || '').includes('column')) {
+        ({ data, error } = await supabase
+          .from('bagages')
+          .insert(basePayload)
+          .select()
+          .single());
+      }
+
+      if (error && String(error.message || '').includes("reservation_id")) {
+        ({ data, error } = await supabase
+          .from('bagages')
+          .insert(basePayloadNoReservation)
+          .select()
+          .single());
+      }
 
       if (error) throw error;
 
@@ -101,15 +310,25 @@ function Enregistrement() {
         reservation_id: reservationId,
         type: 'enregistrement_bagage',
         description: `Bagage ${newBagage.type} enregistré (${newBagage.poids}kg)`,
-        metadata: { qrcode: qrcode_bagage },
+        metadata: {
+          qrcode: qrcode_bagage,
+          couleur: newBagage.couleur,
+          description: newBagage.description,
+          photo_url,
+        },
       });
 
       await loadBagages(enregistrement.id);
-      setNewBagage({ type: 'soute', poids: '' });
+      setNewBagage({ type: 'soute', poids: '', couleur: '', description: '', photoFile: null });
+      setPhotoPreview('');
+      setDetectStatus('idle');
+      setIsBagage(null);
       alert('✅ Bagage enregistré avec succès !');
     } catch (error) {
       console.error('Erreur:', error);
-      alert('❌ Erreur lors de l\'enregistrement du bagage');
+      const message = error?.message || 'Erreur inconnue';
+      setBagageError(message);
+      alert(`❌ Erreur lors de l'enregistrement du bagage: ${message}`);
     }
   };
 
@@ -443,6 +662,52 @@ function Enregistrement() {
                   <button onClick={handleAddBagage} style={styles.addBagageBtn}>
                     ✅ Ajouter
                   </button>
+                </div>
+
+                <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+                  <input
+                    type="text"
+                    placeholder="Couleur (ex: noir)"
+                    value={newBagage.couleur}
+                    onChange={(e) => setNewBagage({ ...newBagage, couleur: e.target.value })}
+                    style={styles.bagageInput}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Description (ex: valise rigide avec autocollants)"
+                    value={newBagage.description}
+                    onChange={(e) => setNewBagage({ ...newBagage, description: e.target.value })}
+                    style={styles.bagageInput}
+                  />
+                  <div>
+                    <label style={{ display: 'block', marginBottom: 6 }}>Photo du bagage</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        setNewBagage({ ...newBagage, photoFile: file });
+                        setPhotoPreview(file ? URL.createObjectURL(file) : '');
+                        detectBagage(file);
+                      }}
+                    />
+                  </div>
+                  <div style={{ fontSize: 13, color: '#555' }}>
+                    {modelLoading ? 'Chargement du détecteur…' : null}
+                    {!modelLoading && detectStatus === 'idle' ? 'Analyse IA prête.' : null}
+                    {detectStatus === 'loading' ? 'Chargement du modèle…' : null}
+                    {detectStatus === 'checking' ? 'Analyse de la photo en cours…' : null}
+                    {detectStatus === 'ok' ? '✅ Bagage détecté' : null}
+                    {detectStatus === 'not_bagage' ? '❌ Ce n’est pas un bagage' : null}
+                    {detectStatus === 'error' ? '⚠️ Erreur pendant l’analyse' : null}
+                    {modelError ? ` ${modelError}` : null}
+                  </div>
+                  {photoPreview ? (
+                    <img src={photoPreview} alt="Aperçu bagage" style={styles.bagagePhoto} />
+                  ) : null}
+                  {bagageError ? (
+                    <div style={{ color: 'crimson', fontSize: 13 }}>{bagageError}</div>
+                  ) : null}
                 </div>
               </div>
             </div>

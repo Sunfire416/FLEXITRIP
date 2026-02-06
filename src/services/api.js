@@ -289,6 +289,33 @@ export const createBagage = async (bagageData) => {
   return data;
 };
 
+export const analyzeBagage = async (analysisPayload) => {
+  const { data, error } = await callEdgeFunction('bagage-operations', '/api/bagages/analyze', {
+    method: 'POST',
+    body: analysisPayload,
+  });
+  if (error) throw error;
+  return data;
+};
+
+export const registerBagage = async (registerPayload) => {
+  const { data, error } = await callEdgeFunction('bagage-operations', '/api/bagages/register', {
+    method: 'POST',
+    body: registerPayload,
+  });
+  if (error) throw error;
+  return data;
+};
+
+export const searchBagages = async (searchPayload) => {
+  const { data, error } = await callEdgeFunction('bagage-operations', '/api/bagages/search', {
+    method: 'POST',
+    body: searchPayload,
+  });
+  if (error) throw error;
+  return data;
+};
+
 export const createBagageEvent = async (eventData) => {
   const { data, error } = await callEdgeFunction('bagage-operations', '/api/bagages/event', {
     method: 'POST',
@@ -790,6 +817,9 @@ const api = {
   cancelBoardingPass,
   // Bagages
   createBagage,
+  analyzeBagage,
+  registerBagage,
+  searchBagages,
   createBagageEvent,
   trackBagage,
   getBagageById,

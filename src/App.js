@@ -14,8 +14,9 @@ import MesVoyages from './components/Voyageur/MesVoyages';
 import Profil from './components/Voyageur/Profil';
 import GestionVoyageurs from './components/Voyageur/GestionVoyageurs'; // ÉTAPE 8
 import Facturation from './components/Voyageur/Facturation'; // ÉTAPE 9
-import PriseEnChargeTaxi from './components/Voyageur/PriseEnChargeTaxi'; // TEMPLATES - ÉTAPE 6
+import EwalletPage from './pages/EwalletPage';
 import CarteTaxi from './components/Voyageur/CarteTaxi'; // TEMPLATES - ÉTAPE 7
+import PriseEnChargeTaxi from './components/Voyageur/PriseEnChargeTaxi'; // TEMPLATES - ÉTAPE 6
 
 // Agent
 import DashboardAgent from './components/Agent/DashboardAgent';
@@ -86,10 +87,12 @@ function App() {
             <Route path="/reservation" element={<Reservation />} />
             <Route path="/enregistrement/:reservationId" element={<Enregistrement />} />
             <Route path="/profil" element={<Profil />} />
-            <Route path="/voyageurs" element={<GestionVoyageurs />} />
-            <Route path="/factures" element={<Facturation />} />
-            <Route path="/prise-en-charge-taxi/:reservationId" element={<PriseEnChargeTaxi />} />
             <Route path="/carte-taxi/:etapeId" element={<CarteTaxi />} />
+            <Route path="/prise-en-charge-taxi/:reservationId" element={<PriseEnChargeTaxi />} />
+            <Route path="/factures" element={<Facturation />} />
+            <Route path="/voyageurs" element={<GestionVoyageurs />} />
+            <Route path="/ewallet" element={<EwalletPage />} />
+            <Route path="/factures" element={<Facturation />} /> {/* ÉTAPE 9 */}
           </>
         )}
 

@@ -1,17 +1,79 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
+import * as api from '../../services/api';
 import { useNavigate } from 'react-router-dom';
+
+const CURRENCY_NAME = 'AccessCoins';
 
 function DashboardVoyageur() {
   const [profile, setProfile] = useState(null);
   const [reservations, setReservations] = useState([]);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletLoading, setWalletLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
     loadProfile();
     loadReservations();
+    loadWallet();
   }, []);
+
+  const getLocalKey = (userId) => `flexitrip_wallet_${userId}`;
+
+  const loadLocalWallet = (userId) => {
+    try {
+      const raw = localStorage.getItem(getLocalKey(userId));
+      if (!raw) return { balance: 0 };
+      const parsed = JSON.parse(raw);
+      return { balance: parsed.balance || 0 };
+    } catch (error) {
+      console.error('Erreur lecture wallet local:', error);
+      return { balance: 0 };
+    }
+  };
+
+  const normalizeBalance = (walletData) => {
+    if (!walletData) return 0;
+    return (
+      walletData.balance ??
+      walletData.solde ??
+      walletData.coins ??
+      walletData.wallet?.balance ??
+      walletData.wallet?.solde ??
+      0
+    );
+  };
+
+  const loadWallet = async () => {
+    setWalletLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setWalletBalance(0);
+        return;
+      }
+
+      let walletData = null;
+      try {
+        walletData = await api.getWallet(user.id);
+      } catch (apiError) {
+        console.warn('Wallet API non disponible, fallback local:', apiError);
+      }
+
+      if (walletData) {
+        setWalletBalance(normalizeBalance(walletData));
+      } else {
+        const local = loadLocalWallet(user.id);
+        setWalletBalance(local.balance);
+      }
+    } catch (error) {
+      console.error('Erreur chargement wallet:', error);
+      setWalletBalance(0);
+    } finally {
+      setWalletLoading(false);
+    }
+  };
 
   const loadProfile = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -74,6 +136,9 @@ function DashboardVoyageur() {
           </button>
           <button onClick={() => navigate('/factures')} style={styles.navBtn}>
             💰 Mes factures
+          </button>
+          <button onClick={() => navigate('/ewallet')} style={styles.walletBadge}>
+            🪙 {walletLoading ? '...' : `${walletBalance.toFixed(2)} ${CURRENCY_NAME}`}
           </button>
           <span style={styles.userName}>{profile?.prenom} {profile?.nom}</span>
           <button onClick={handleLogout} style={styles.logoutBtn}>Déconnexion</button>
@@ -209,6 +274,17 @@ const styles = {
     borderRadius: '6px',
     cursor: 'pointer',
     marginRight: '10px',
+  },
+  walletBadge: {
+    padding: '8px 12px',
+    background: '#0f172a',
+    color: 'white',
+    border: 'none',
+    borderRadius: '999px',
+    cursor: 'pointer',
+    marginRight: '10px',
+    fontWeight: 'bold',
+    fontSize: '12px',
   },
   userName: {
     marginRight: '20px',
